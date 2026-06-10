@@ -90,22 +90,24 @@ jobs:
           WINE_COMMIT: ${{ steps.wine.outputs.commit }}
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Upload patched files only (lightweight)
-        uses: actions/upload-artifact@v4
-        with:
-          name: proton-patch-files-${{ steps.target.outputs.tag_name }}
-          path: |
-            build/wine-build/dlls/winebus.sys/x86_64-windows/winebus.sys
-            build/wine-build/dlls/winebus.sys/winebus.so
-            build/wine-build/dlls/winepulse.drv/winepulse.so
-            build/wine-build/dlls/winealsa.drv/winealsa.so
-          retention-days: 90
+      - name: Package patch files
+        run: |
+          cd build/wine-build
+          mkdir -p proton-patch
+          cp dlls/winebus.sys/x86_64-windows/winebus.sys proton-patch/
+          cp dlls/winebus.sys/winebus.so proton-patch/
+          cp dlls/winepulse.drv/winepulse.so proton-patch/
+          cp dlls/winealsa.drv/winealsa.so proton-patch/
+          tar czf proton-patch.tar.gz proton-patch
+          ls -lh proton-patch.tar.gz
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.target.outputs.tag_name }}
           name: "${{ steps.target.outputs.tag }}-eg (edgemap patched)"
-          files: build/*-eg.tar.gz
+          files: |
+            build/*-eg.tar.gz
+            build/wine-build/proton-patch.tar.gz
         env:
           GITHUB_TOKEN: ${{ github.token }}
