@@ -22,7 +22,7 @@ Download the `proton-patch-files-*` artifact from [Releases](../../releases), th
 
 ```bash
 # Find your GE-Proton installation
-GE_DIR=$(find ~/.local/share/Steam/compatibilitytools.d -maxdepth 1 -name "GE-Proton*" | sort -V | tail -1)
+GE_DIR=YOUR-PROTON-GE-DIR
 
 # Replace files
 cp winebus.sys "$GE_DIR/files/lib/wine/x86_64-windows/winebus.sys"
