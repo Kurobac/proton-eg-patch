@@ -110,7 +110,11 @@ build_wine() {
     if [ ! -f "$winebuild/Makefile" ]; then
         log "Running configure..."
         mkdir -p "$winebuild"
-        (cd "$winebuild" && "$winedir/configure" --enable-win64 --without-x) > /dev/null
+        (cd "$winebuild" && "$winedir/configure" --enable-win64 \
+            --without-x --without-freetype --without-curses --without-oss \
+            --without-gstreamer --without-opengl --without-vulkan \
+            --without-cups --without-dbus --without-sdl \
+            --without-gettext --without-opencl) > /dev/null
     fi
 
     log "Building wine (64-bit, ignoring unrelated errors)..."
