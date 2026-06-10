@@ -104,17 +104,17 @@ build_wine() {
 
     if [ ! -f "$winedir/configure" ]; then
         log "Running autogen.sh..."
-        (cd "$winedir" && ./autogen.sh) > /dev/null 2>&1
+        (cd "$winedir" && ./autogen.sh) > /dev/null
     fi
 
     if [ ! -f "$winebuild/Makefile" ]; then
         log "Running configure..."
         mkdir -p "$winebuild"
-        (cd "$winebuild" && "$winedir/configure" --enable-win64) > /dev/null 2>&1
+        (cd "$winebuild" && "$winedir/configure" --enable-win64) > /dev/null
     fi
 
     log "Building wine (64-bit, ignoring unrelated errors)..."
-    (cd "$winebuild" && make -k -j"$(nproc)" > /dev/null 2>&1) || true
+    (cd "$winebuild" && make -k -j"$(nproc)" > /dev/null) || true
 
     # Verify our 4 output files exist
     local files=(
