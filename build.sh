@@ -111,7 +111,7 @@ build_wine() {
         log "Running configure..."
         mkdir -p "$winebuild"
         (cd "$winebuild" && "$winedir/configure" --enable-win64 \
-            --without-x --without-freetype --without-curses --without-oss \
+            --without-x --without-freetype --without-oss \
             --without-gstreamer --without-opengl --without-vulkan \
             --without-cups --without-dbus \
             --without-gettext --without-opencl) > /dev/null
@@ -119,9 +119,10 @@ build_wine() {
 
     log "Building wine (64-bit, only our 3 modules)..."
     (cd "$winebuild" && make -k -j"$(nproc)" \
-        dlls/winebus.sys \
-        dlls/winepulse.drv \
-        dlls/winealsa.drv > /dev/null) || true
+        dlls/winebus.sys/x86_64-windows/winebus.sys \
+        dlls/winebus.sys/winebus.so \
+        dlls/winepulse.drv/winepulse.so \
+        dlls/winealsa.drv/winealsa.so > /dev/null) || true
 
     # Verify our 4 output files exist
     local files=(
