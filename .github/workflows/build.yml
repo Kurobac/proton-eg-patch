@@ -1,0 +1,112 @@
+name: Build patched Proton
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Every Monday 8AM UTC
+  workflow_dispatch:
+    inputs:
+      ge_tag:
+        description: 'GE-Proton tag (e.g. GE-Proton10-34)'
+        required: false
+        type: string
+      wine_commit:
+        description: 'Wine commit SHA (auto-detected if empty)'
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            flex bison \
+            libasound2-dev libpulse-dev libudev-dev \
+            autoconf automake libtool \
+            python3
+
+      - name: Determine build target
+        id: target
+        env:
+          GE_TAG_INPUT: ${{ github.event.inputs.ge_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$GE_TAG_INPUT" ]; then
+            echo "tag=$GE_TAG_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            # Fetch latest GE-Proton release tag
+            tag=$(curl -sL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "Latest GE-Proton: $tag"
+          fi
+          echo "tag_name=$(echo "$tag" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Get wine commit
+        id: wine
+        env:
+          GE_TAG: ${{ steps.target.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.inputs.wine_commit }}" ]; then
+            echo "commit=${{ github.event.inputs.wine_commit }}" >> "$GITHUB_OUTPUT"
+          else
+            commit=$(curl -sL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/git/trees/$GE_TAG" \
+              | python3 -c "import json,sys; [print(i['sha']) for i in json.load(sys.stdin)['tree'] if i['path']=='wine']")
+            echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Wine commit: $commit"
+
+      - name: Cache wine build
+        uses: actions/cache@v4
+        id: cache-wine
+        with:
+          path: build/wine-build
+          key: wine-${{ steps.wine.outputs.commit }}-${{ hashFiles('patches/*.patch') }}
+
+      - name: Build
+        run: ./build.sh "$GE_TAG" "$WINE_COMMIT"
+        env:
+          GE_TAG: ${{ steps.target.outputs.tag }}
+          WINE_COMMIT: ${{ steps.wine.outputs.commit }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Repack
+        run: |
+          cd build
+          tar czf "edgemap-$GE_TAG.tar.gz" "$GE_TAG"
+          ls -lh "edgemap-$GE_TAG.tar.gz"
+        env:
+          GE_TAG: ${{ steps.target.outputs.tag }}
+
+      - name: Upload full tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgemap-${{ steps.target.outputs.tag_name }}
+          path: build/edgemap-*.tar.gz
+          retention-days: 90
+
+      - name: Upload patched files only (lightweight)
+        uses: actions/upload-artifact@v4
+        with:
+          name: proton-patch-files-${{ steps.target.outputs.tag_name }}
+          path: |
+            build/wine-build/dlls/winebus.sys/x86_64-windows/winebus.sys
+            build/wine-build/dlls/winebus.sys/winebus.so
+            build/wine-build/dlls/winepulse.drv/winepulse.so
+            build/wine-build/dlls/winealsa.drv/winealsa.so
+          retention-days: 90
