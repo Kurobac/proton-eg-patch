@@ -2,7 +2,7 @@ name: Build patched Proton
 
 on:
   schedule:
-    - cron: '0 8 * * 1'  # Every Monday 8AM UTC
+    - cron: '0 8 * * 1' # Every Monday 8AM UTC
   workflow_dispatch:
     inputs:
       ge_tag:
@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
 
       - name: Install dependencies
         run: |
