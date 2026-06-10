@@ -33,7 +33,7 @@ jobs:
             flex bison \
             libasound2-dev libpulse-dev libudev-dev \
             autoconf automake libtool \
-            mingw-w64 \
+            mingw-w64 libsdl2-dev \
             python3
 
       - name: Determine build target
