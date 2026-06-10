@@ -86,21 +86,6 @@ jobs:
           WINE_COMMIT: ${{ steps.wine.outputs.commit }}
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Repack
-        run: |
-          cd build
-          tar czf "edgemap-$GE_TAG.tar.gz" "$GE_TAG"
-          ls -lh "edgemap-$GE_TAG.tar.gz"
-        env:
-          GE_TAG: ${{ steps.target.outputs.tag }}
-
-      - name: Upload full tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: edgemap-${{ steps.target.outputs.tag_name }}
-          path: build/edgemap-*.tar.gz
-          retention-days: 90
-
       - name: Upload patched files only (lightweight)
         uses: actions/upload-artifact@v4
         with:
@@ -111,3 +96,12 @@ jobs:
             build/wine-build/dlls/winepulse.drv/winepulse.so
             build/wine-build/dlls/winealsa.drv/winealsa.so
           retention-days: 90
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.target.outputs.tag_name }}
+          name: "${{ steps.target.outputs.tag }}-eg (edgemap patched)"
+          files: build/*-eg.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
