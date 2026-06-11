@@ -14,6 +14,14 @@ winepulse.drv, and winealsa.drv to always compute a consistent ContainerId.
 
 See [HD-HAPTICS-FIX.md](https://github.com/kurobac/edgemap/blob/main/docs/HD-HAPTICS-FIX.md) for details.
 
+## Build approach
+
+This patch is applied directly to ValveSoftware/wine. Wine-staging patches
+and GE-Proton's own wine patches are **not** applied. The resulting binaries
+may lack optional GE-Proton features (e.g. PulseAudio fast polling,
+ALSA channel count override). If you need full GE-Proton equivalence,
+apply this patch via GE-Proton's own build system instead.
+
 ## Install
 
 ### Option A: Patched files only (lightweight, ~300KB)
