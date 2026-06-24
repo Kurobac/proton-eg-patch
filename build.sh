@@ -11,6 +11,7 @@ GE_TAG="${1:-}"
 WINE_COMMIT="${2:-}"
 WINE_SRCDIR=""
 WINE_BUILDDIR=""
+EDGEMAP_TAG=""
 
 if [ -z "$GE_TAG" ]; then
     echo "Usage: $0 <GE-Proton-tag> [wine-commit]" >&2
@@ -81,7 +82,7 @@ download_wine() {
 download_ge_proton() {
     local tag="$1"
     local dst="$BUILDDIR/$tag"
-    if [ -d "$dst/proton" ]; then
+    if [ -f "$dst/proton" ]; then
         log "GE-Proton already at $dst"
         return
     fi
@@ -96,6 +97,20 @@ download_ge_proton() {
     if [ "$subdir" != "$tag" ] && [ -d "$BUILDDIR/$subdir" ]; then
         mv "$BUILDDIR/$subdir" "$dst"
     fi
+}
+
+# ---- Create clean edgemap output tree from cached GE-Proton ----
+prepare_edgemap_tree() {
+    local src="$BUILDDIR/$GE_TAG"
+    local dst="$BUILDDIR/$EDGEMAP_TAG"
+
+    if [ ! -f "$src/proton" ]; then
+        err "GE-Proton source tree not found: $src"
+    fi
+
+    log "Preparing edgemap tree at $dst..."
+    rm -rf "$dst"
+    cp -a "$src" "$dst"
 }
 
 # ---- Build wine 64-bit, just our 3 modules ----
@@ -143,7 +158,7 @@ build_wine() {
 
 # ---- Replace patched files in GE-Proton tree ----
 replace_files() {
-    local ge_lib="$BUILDDIR/$GE_TAG/files/lib/wine"
+    local ge_lib="$BUILDDIR/$EDGEMAP_TAG/files/lib/wine"
     local wb="$WINE_BUILDDIR"
 
     if [ ! -d "$ge_lib" ]; then
@@ -153,29 +168,37 @@ replace_files() {
     log "Replacing patched files..."
 
     # winebus.sys PE (main.c patch → get_container_id)
-    cp -v "$wb/dlls/winebus.sys/x86_64-windows/winebus.sys" \
-          "$ge_lib/x86_64-windows/winebus.sys"
+    replace_file "$wb/dlls/winebus.sys/x86_64-windows/winebus.sys" \
+                 "$ge_lib/x86_64-windows/winebus.sys"
 
     # winebus.sys Unix (bus_udev.c et al)
-    cp -v "$wb/dlls/winebus.sys/winebus.so" \
-          "$ge_lib/x86_64-unix/winebus.so"
+    replace_file "$wb/dlls/winebus.sys/winebus.so" \
+                 "$ge_lib/x86_64-unix/winebus.so"
 
     # winepulse.drv Unix (pulse.c patch → get_container_id override)
-    cp -v "$wb/dlls/winepulse.drv/winepulse.so" \
-          "$ge_lib/x86_64-unix/winepulse.so"
+    replace_file "$wb/dlls/winepulse.drv/winepulse.so" \
+                 "$ge_lib/x86_64-unix/winepulse.so"
 
     # winealsa.drv Unix (alsa.c patch → ContainerId property)
-    cp -v "$wb/dlls/winealsa.drv/winealsa.so" \
-          "$ge_lib/x86_64-unix/winealsa.so"
+    replace_file "$wb/dlls/winealsa.drv/winealsa.so" \
+                 "$ge_lib/x86_64-unix/winealsa.so"
+}
+
+replace_file() {
+    local src="$1"
+    local dst="$2"
+
+    rm -f "$dst"
+    install -m 555 -v "$src" "$dst"
 }
 
 # ---- Repack to tar.gz ----
 repack() {
-    local src_dir="$BUILDDIR/$EDGEMAP_TAG"
     local outname="$EDGEMAP_TAG.tar.gz"
     local outpath="$BUILDDIR/$outname"
 
     log "Repacking $outname..."
+    rm -f "$outpath"
     tar czf "$outpath" -C "$BUILDDIR" "$EDGEMAP_TAG"
     log "Done: $outpath ($(ls -lh "$outpath" | awk '{print $5}'))"
     echo "$outpath"
@@ -183,12 +206,6 @@ repack() {
 
 # ---- Rename and tag as edgemap build ----
 tag_edgemap() {
-    EDGEMAP_TAG="${GE_TAG}-eg"
-
-    if [ "$EDGEMAP_TAG" != "$GE_TAG" ]; then
-        mv "$BUILDDIR/$GE_TAG" "$BUILDDIR/$EDGEMAP_TAG"
-    fi
-
     local vdf="$BUILDDIR/$EDGEMAP_TAG/compatibilitytool.vdf"
     if [ -f "$vdf" ]; then
         sed -i "s|\"${GE_TAG}\"|\"${EDGEMAP_TAG}\"|g" "$vdf"
@@ -206,6 +223,7 @@ main() {
     log "Wine commit: $WINE_COMMIT"
     WINE_SRCDIR="$BUILDDIR/wine-$WINE_COMMIT"
     WINE_BUILDDIR="$BUILDDIR/wine-build-$WINE_COMMIT"
+    EDGEMAP_TAG="${GE_TAG}-eg"
 
     log "=== Downloading wine source ==="
     download_wine "$WINE_COMMIT"
@@ -230,6 +248,9 @@ main() {
 
     log "=== Downloading $GE_TAG ==="
     download_ge_proton "$GE_TAG"
+
+    log "=== Preparing $EDGEMAP_TAG ==="
+    prepare_edgemap_tree
 
     log "=== Replacing files ==="
     replace_files
