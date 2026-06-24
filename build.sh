@@ -9,6 +9,8 @@ set -euo pipefail
 
 GE_TAG="${1:-}"
 WINE_COMMIT="${2:-}"
+WINE_SRCDIR=""
+WINE_BUILDDIR=""
 
 if [ -z "$GE_TAG" ]; then
     echo "Usage: $0 <GE-Proton-tag> [wine-commit]" >&2
@@ -64,8 +66,8 @@ sys.exit(1)
 # ---- Download & extract ----
 download_wine() {
     local commit="$1"
-    local dst="$BUILDDIR/wine"
-    if [ -d "$dst/configure.ac" ]; then
+    local dst="$WINE_SRCDIR"
+    if [ -f "$dst/configure.ac" ]; then
         log "Wine source already at $dst"
         return
     fi
@@ -74,7 +76,6 @@ download_wine() {
     log "Downloading wine source ($commit)..."
     mkdir -p "$(dirname "$dst")"
     curl -sL "$url" | tar xz -C "$BUILDDIR"
-    mv "$BUILDDIR/wine-$commit" "$dst"
 }
 
 download_ge_proton() {
@@ -99,8 +100,8 @@ download_ge_proton() {
 
 # ---- Build wine 64-bit, just our 3 modules ----
 build_wine() {
-    local winedir="$BUILDDIR/wine"
-    local winebuild="$BUILDDIR/wine-build"
+    local winedir="$WINE_SRCDIR"
+    local winebuild="$WINE_BUILDDIR"
 
     if [ ! -f "$winedir/configure" ]; then
         log "Running autogen.sh..."
@@ -122,7 +123,7 @@ build_wine() {
         dlls/winebus.sys/x86_64-windows/winebus.sys \
         dlls/winebus.sys/winebus.so \
         dlls/winepulse.drv/winepulse.so \
-        dlls/winealsa.drv/winealsa.so > /dev/null) || true
+        dlls/winealsa.drv/winealsa.so > /dev/null)
 
     # Verify our 4 output files exist
     local files=(
@@ -143,7 +144,7 @@ build_wine() {
 # ---- Replace patched files in GE-Proton tree ----
 replace_files() {
     local ge_lib="$BUILDDIR/$GE_TAG/files/lib/wine"
-    local wb="$BUILDDIR/wine-build"
+    local wb="$WINE_BUILDDIR"
 
     if [ ! -d "$ge_lib" ]; then
         err "GE-Proton lib directory not found: $ge_lib"
@@ -203,13 +204,26 @@ main() {
         WINE_COMMIT=$(get_wine_commit_api "$GE_TAG")
     fi
     log "Wine commit: $WINE_COMMIT"
+    WINE_SRCDIR="$BUILDDIR/wine-$WINE_COMMIT"
+    WINE_BUILDDIR="$BUILDDIR/wine-build-$WINE_COMMIT"
 
     log "=== Downloading wine source ==="
     download_wine "$WINE_COMMIT"
 
     log "=== Applying patch ==="
-    (cd "$BUILDDIR/wine" && patch -N -p1 < "$PATCHFILE" 2>&1 | grep -v "^patching file" || true)
-    log "Patch applied."
+    local patch_output
+    if (cd "$WINE_SRCDIR" && patch -N -p1 --dry-run < "$PATCHFILE" > /dev/null); then
+        patch_output=$(cd "$WINE_SRCDIR" && patch -N -p1 < "$PATCHFILE" 2>&1) || {
+            printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
+            err "Patch failed to apply cleanly."
+        }
+        printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
+        log "Patch applied."
+    elif (cd "$WINE_SRCDIR" && patch -R -p1 --dry-run < "$PATCHFILE" > /dev/null); then
+        log "Patch already applied."
+    else
+        err "Patch failed to apply cleanly."
+    fi
 
     log "=== Building wine ==="
     build_wine

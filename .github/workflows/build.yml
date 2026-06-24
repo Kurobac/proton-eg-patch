@@ -47,6 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$GE_TAG_INPUT" ]; then
+            tag="$GE_TAG_INPUT"
             echo "tag=$GE_TAG_INPUT" >> "$GITHUB_OUTPUT"
           else
             # Fetch latest GE-Proton release tag
@@ -66,6 +67,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "${{ github.event.inputs.wine_commit }}" ]; then
+            commit="${{ github.event.inputs.wine_commit }}"
             echo "commit=${{ github.event.inputs.wine_commit }}" >> "$GITHUB_OUTPUT"
           else
             commit=$(curl -sL \
@@ -80,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         id: cache-wine
         with:
-          path: build/wine-build
+          path: build/wine-build-${{ steps.wine.outputs.commit }}
           key: wine-${{ steps.wine.outputs.commit }}-${{ hashFiles('patches/*.patch') }}
 
       - name: Build
@@ -92,7 +94,7 @@ jobs:
 
       - name: Package patch files
         run: |
-          cd build/wine-build
+          cd "build/wine-build-$WINE_COMMIT"
           mkdir -p proton-patch
           cp dlls/winebus.sys/x86_64-windows/winebus.sys proton-patch/
           cp dlls/winebus.sys/winebus.so proton-patch/
@@ -100,6 +102,8 @@ jobs:
           cp dlls/winealsa.drv/winealsa.so proton-patch/
           tar czf proton-patch.tar.gz proton-patch
           ls -lh proton-patch.tar.gz
+        env:
+          WINE_COMMIT: ${{ steps.wine.outputs.commit }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -108,6 +112,6 @@ jobs:
           name: "${{ steps.target.outputs.tag }}-eg (edgemap patched)"
           files: |
             build/*-eg.tar.gz
-            build/wine-build/proton-patch.tar.gz
+            build/wine-build-${{ steps.wine.outputs.commit }}/proton-patch.tar.gz
         env:
           GITHUB_TOKEN: ${{ github.token }}

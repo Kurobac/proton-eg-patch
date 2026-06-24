@@ -12,7 +12,7 @@ index aea4ddf..e13d10f 100644
  
      if(IsEqualPropertyKey(*prop, devicepath_key))
      {
-@@ -2407,6 +2410,47 @@ static NTSTATUS alsa_get_prop_value(void *args)
+@@ -2407,6 +2410,48 @@ static NTSTATUS alsa_get_prop_value(void *args)
  
          params->result = S_OK;
          return STATUS_SUCCESS;
@@ -42,10 +42,11 @@ index aea4ddf..e13d10f 100644
 +            }
 +        }
 +
-+        if (vendor_id == 0x054C && (product_id == 0x0CE6 || product_id == 0x0DF2))
++        if (vendor_id == 0x054C && (product_id == 0x0CE6 || product_id == 0x0DF2)) {
 +            container_id.Data1 = vendor_id;
 +            container_id.Data2 = 0xED6E;
 +            container_id.Data3 = 0x0001;
++        }
 +
 +        if (*params->buffer_size < sizeof(GUID)) {
 +            *params->buffer_size = sizeof(GUID);
