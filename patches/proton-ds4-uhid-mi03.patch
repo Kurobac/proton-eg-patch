@@ -1,0 +1,60 @@
+diff --git a/dlls/winebus.sys/bus_udev.c b/dlls/winebus.sys/bus_udev.c
+--- a/dlls/winebus.sys/bus_udev.c
++++ b/dlls/winebus.sys/bus_udev.c
+@@ -1672,6 +1672,37 @@ static NTSTATUS lnxev_device_create(struct udev_device *dev, int fd, const char
+ #endif
+ }
+ 
++static BOOL is_dualshock4_hidraw_device(const struct device_desc *desc)
++{
++    return desc->vid == 0x054c && (desc->pid == 0x05c4 || desc->pid == 0x09cc);
++}
++
++static BOOL is_uhid_udev_device(struct udev_device *dev)
++{
++    const char *syspath = udev_device_get_syspath(dev);
++
++    return syspath && strstr(syspath, "/virtual/misc/uhid/");
++}
++
++static BOOL apply_dualshock4_uhid_usb_identity(struct udev_device *dev, const char *subsystem,
++                                              struct device_desc *desc)
++{
++    if (strcmp(subsystem, "hidraw") || !is_dualshock4_hidraw_device(desc) || !is_uhid_udev_device(dev))
++        return FALSE;
++
++    desc->input = 3;
++    if (!desc->version) desc->version = 0x0100;
++
++    memset(&desc->bus_container_id, 0, sizeof(desc->bus_container_id));
++    desc->bus_container_id.Data1 = MAKELONG(desc->vid, desc->pid);
++    desc->bus_container_id.Data2 = 0xed6e;
++    desc->bus_container_id.Data3 = desc->input;
++
++    TRACE("Applied DualShock 4 UHID USB identity override: %s, container ID %s.\n",
++          debugstr_device_desc(desc), debugstr_guid(&desc->bus_container_id));
++    return TRUE;
++}
++
+ static void get_container_id_for_usb_udev_device(struct udev_device *dev, struct device_desc *desc)
+ {
+     unsigned int vid, pid, version;
+@@ -1731,8 +1762,6 @@ static void udev_add_device(struct udev_device *dev, int fd)
+     if (bus == BUS_BLUETOOTH) desc.bus_type = BUS_TYPE_BLUETOOTH;
+     else if (bus == BUS_USB) desc.bus_type = BUS_TYPE_USB;
+ 
+-    if (desc.bus_type == BUS_TYPE_USB) get_container_id_for_usb_udev_device(dev, &desc);
+-
+     if (!(subsystem = udev_device_get_subsystem(dev)))
+     {
+         WARN("udev_device_get_subsystem failed for %s.\n", debugstr_a(devnode));
+@@ -1739,6 +1768,9 @@ static void udev_add_device(struct udev_device *dev, int fd)
+         return;
+     }
+ 
++    if (!apply_dualshock4_uhid_usb_identity(dev, subsystem, &desc) && desc.bus_type == BUS_TYPE_USB)
++        get_container_id_for_usb_udev_device(dev, &desc);
++
+     if (desc.vid == 0x28de && desc.pid == 0x11ff && !strcmp(subsystem, "input"))
+     {
+         TRACE("evdev %s: detected steam input virtual controller\n", debugstr_a(devnode));

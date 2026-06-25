@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build patched GE-Proton with DualSense ContainerId fix.
+# Build patched GE-Proton with edgemap/dseuhid controller fixes.
 #
 # Usage:
 #   ./build.sh GE-Proton10-34                    # auto-detect wine commit from GitHub API
@@ -21,7 +21,10 @@ fi
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$WORKDIR/build"
-PATCHFILE="$WORKDIR/patches/proton-dualsense-containerid.patch"
+PATCHFILES=(
+    "$WORKDIR/patches/proton-dualsense-containerid.patch"
+    "$WORKDIR/patches/proton-ds4-uhid-mi03.patch"
+)
 
 GITHUB_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom"
 GE_RELEASE_URL="https://github.com/GloriousEggroll/proton-ge-custom/releases/download"
@@ -76,7 +79,7 @@ download_wine() {
     local url="$VALVE_WINE/archive/$commit.tar.gz"
     log "Downloading wine source ($commit)..."
     mkdir -p "$(dirname "$dst")"
-    curl -sL "$url" | tar xz -C "$BUILDDIR"
+    curl -L --fail "$url" | tar xz -C "$BUILDDIR"
 }
 
 download_ge_proton() {
@@ -90,12 +93,35 @@ download_ge_proton() {
     local url="$GE_RELEASE_URL/$tag/$tag.tar.gz"
     log "Downloading $tag (this may take a while)..."
     mkdir -p "$(dirname "$dst")"
-    curl -sL "$url" | tar xz -C "$BUILDDIR"
+    curl -L --fail "$url" | tar xz -C "$BUILDDIR"
     # The tarball extracts to a subdirectory, move it
     local subdir
     subdir=$(ls "$BUILDDIR" | grep -i "$tag" | head -1)
     if [ "$subdir" != "$tag" ] && [ -d "$BUILDDIR/$subdir" ]; then
         mv "$BUILDDIR/$subdir" "$dst"
+    fi
+}
+
+# ---- Apply patches idempotently ----
+apply_patch_file() {
+    local patchfile="$1"
+    local patch_name
+    local patch_output
+
+    patch_name="$(basename "$patchfile")"
+    log "Applying $patch_name..."
+
+    if (cd "$WINE_SRCDIR" && patch -N -p1 --dry-run < "$patchfile" > /dev/null); then
+        patch_output=$(cd "$WINE_SRCDIR" && patch -N -p1 < "$patchfile" 2>&1) || {
+            printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
+            err "$patch_name failed to apply cleanly."
+        }
+        printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
+        log "$patch_name applied."
+    elif (cd "$WINE_SRCDIR" && patch -R -p1 --dry-run < "$patchfile" > /dev/null); then
+        log "$patch_name already applied."
+    else
+        err "$patch_name failed to apply cleanly."
     fi
 }
 
@@ -228,20 +254,11 @@ main() {
     log "=== Downloading wine source ==="
     download_wine "$WINE_COMMIT"
 
-    log "=== Applying patch ==="
-    local patch_output
-    if (cd "$WINE_SRCDIR" && patch -N -p1 --dry-run < "$PATCHFILE" > /dev/null); then
-        patch_output=$(cd "$WINE_SRCDIR" && patch -N -p1 < "$PATCHFILE" 2>&1) || {
-            printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
-            err "Patch failed to apply cleanly."
-        }
-        printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
-        log "Patch applied."
-    elif (cd "$WINE_SRCDIR" && patch -R -p1 --dry-run < "$PATCHFILE" > /dev/null); then
-        log "Patch already applied."
-    else
-        err "Patch failed to apply cleanly."
-    fi
+    log "=== Applying patches ==="
+    local patchfile
+    for patchfile in "${PATCHFILES[@]}"; do
+        apply_patch_file "$patchfile"
+    done
 
     log "=== Building wine ==="
     build_wine
