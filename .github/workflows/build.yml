@@ -2,7 +2,7 @@ name: Build patched Proton
 
 on:
   schedule:
-    - cron: '0 8 * * 1' # Every Monday 8AM UTC
+    - cron: '0 8 * * *' # Every day at 8AM UTC
   workflow_dispatch:
     inputs:
       ge_tag:
@@ -21,24 +21,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  check_release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    outputs:
+      ge_tag: ${{ steps.target.outputs.tag }}
+      release_tag: ${{ steps.target.outputs.tag_name }}
+      release_exists: ${{ steps.release.outputs.exists }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            flex bison \
-            libasound2-dev libpulse-dev libudev-dev \
-            autoconf automake libtool \
-            mingw-w64 libsdl2-dev \
-            python3
-
       - name: Determine build target
         id: target
         env:
@@ -59,10 +49,61 @@ jobs:
           fi
           echo "tag_name=$(echo "$tag" | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
+      - name: Check existing release
+        id: release
+        env:
+          RELEASE_TAG: ${{ steps.target.outputs.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          response_file="$RUNNER_TEMP/release-response.json"
+          status=$(curl --silent --show-error \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+
+          case "$status" in
+            200)
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "Release $RELEASE_TAG already exists; skipping build."
+              ;;
+            404)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "Release $RELEASE_TAG does not exist; continuing build."
+              ;;
+            *)
+              echo "GitHub API returned HTTP $status while checking $RELEASE_TAG." >&2
+              cat "$response_file" >&2
+              exit 1
+              ;;
+          esac
+
+  build:
+    needs: check_release
+    if: needs.check_release.outputs.release_exists == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            flex bison \
+            libasound2-dev libpulse-dev libudev-dev \
+            autoconf automake libtool \
+            mingw-w64 libsdl2-dev \
+            python3
+
       - name: Get wine commit
         id: wine
         env:
-          GE_TAG: ${{ steps.target.outputs.tag }}
+          GE_TAG: ${{ needs.check_release.outputs.ge_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "${{ github.event.inputs.wine_commit }}" ]; then
@@ -80,7 +121,7 @@ jobs:
       - name: Build
         run: ./build.sh "$GE_TAG" "$WINE_COMMIT"
         env:
-          GE_TAG: ${{ steps.target.outputs.tag }}
+          GE_TAG: ${{ needs.check_release.outputs.ge_tag }}
           WINE_COMMIT: ${{ steps.wine.outputs.commit }}
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -100,8 +141,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.target.outputs.tag_name }}
-          name: "${{ steps.target.outputs.tag }}-eg (edgemap patched)"
+          tag_name: ${{ needs.check_release.outputs.release_tag }}
+          name: "${{ needs.check_release.outputs.ge_tag }}-eg (edgemap patched)"
           files: |
             build/*-eg.tar.gz
             build/wine-build-${{ steps.wine.outputs.commit }}/proton-patch.tar.gz
