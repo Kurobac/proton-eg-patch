@@ -90,10 +90,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Install dependencies
+      - name: Update apt index
+        timeout-minutes: 3
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
+          sudo apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+
+      - name: Install dependencies
+        timeout-minutes: 5
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo env DEBIAN_FRONTEND="$DEBIAN_FRONTEND" apt-get install -y \
             flex bison \
             libasound2-dev libpulse-dev libudev-dev \
             autoconf automake libtool \
