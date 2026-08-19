@@ -90,6 +90,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@main
 
+      - name: Configure apt mirror
+        run: |
+          source_file=/etc/apt/sources.list.d/ubuntu.sources
+          grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "$source_file"
+          sudo sed -i \
+            's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu/|g' \
+            "$source_file"
+          grep -F 'https://archive.ubuntu.com/ubuntu/' "$source_file"
+
       - name: Update apt index
         timeout-minutes: 3
         run: |
