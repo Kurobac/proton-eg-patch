@@ -27,7 +27,6 @@ PATCHFILES=(
 )
 
 GITHUB_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom"
-GE_RELEASE_URL="https://github.com/GloriousEggroll/proton-ge-custom/releases/download"
 VALVE_WINE="https://github.com/ValveSoftware/wine"
 
 log()  { echo ":: $*" >&2; }
@@ -67,6 +66,32 @@ sys.exit(1)
 "
 }
 
+get_ge_release_asset_url() {
+    local tag="$1"
+    local auth_header=()
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+
+    curl -sL --fail "${auth_header[@]}" "$GITHUB_API/releases/tags/$tag" | python3 -c '
+import json, sys
+
+tag = sys.argv[1]
+supported_names = {f"{tag}.tar.gz", f"{tag}-x86_64.tar.gz"}
+matches = [
+    asset for asset in json.load(sys.stdin).get("assets", [])
+    if asset.get("name") in supported_names
+]
+
+if len(matches) != 1:
+    names = ", ".join(sorted(asset.get("name", "<unnamed>") for asset in matches)) or "none"
+    print(f"Expected exactly one x86_64 release asset for {tag}; found: {names}", file=sys.stderr)
+    sys.exit(1)
+
+print(matches[0]["browser_download_url"])
+' "$tag"
+}
+
 # ---- Download & extract ----
 download_wine() {
     local commit="$1"
@@ -90,7 +115,8 @@ download_ge_proton() {
         return
     fi
     rm -rf "$dst"
-    local url="$GE_RELEASE_URL/$tag/$tag.tar.gz"
+    local url
+    url=$(get_ge_release_asset_url "$tag")
     log "Downloading $tag (this may take a while)..."
     mkdir -p "$(dirname "$dst")"
     curl -L --fail "$url" | tar xz -C "$BUILDDIR"
