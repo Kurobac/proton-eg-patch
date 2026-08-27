@@ -256,13 +256,48 @@ repack() {
     echo "$outpath"
 }
 
+update_compatibilitytool_vdf() {
+    local vdf="$1"
+    local tool_name="$2"
+
+    python3 - "$vdf" "$tool_name" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+tool_name = sys.argv[2]
+text = path.read_text()
+
+internal_pattern = re.compile(r'("compat_tools"\s*\{\s*)"[^"\r\n]+"')
+display_pattern = re.compile(r'(^[ \t]*"display_name"[ \t]+)"[^"\r\n]+"', re.MULTILINE)
+
+updated, internal_count = internal_pattern.subn(
+    lambda match: f'{match.group(1)}"{tool_name}"', text
+)
+updated, display_count = display_pattern.subn(
+    lambda match: f'{match.group(1)}"{tool_name}"', updated
+)
+
+if internal_count != 1 or display_count != 1:
+    print(
+        f"Expected one internal name and one display_name in {path}; "
+        f"found {internal_count} and {display_count}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+path.write_text(updated)
+PY
+}
+
 # ---- Rename and tag as edgemap build ----
 tag_edgemap() {
     local vdf="$BUILDDIR/$EDGEMAP_TAG/compatibilitytool.vdf"
-    if [ -f "$vdf" ]; then
-        sed -i "s|\"${GE_TAG}\"|\"${EDGEMAP_TAG}\"|g" "$vdf"
-        log "Updated compatibilitytool.vdf: display_name = $EDGEMAP_TAG"
-    fi
+
+    [ -f "$vdf" ] || err "compatibilitytool.vdf not found: $vdf"
+    update_compatibilitytool_vdf "$vdf" "$EDGEMAP_TAG"
+    log "Updated compatibilitytool.vdf: internal_name = $EDGEMAP_TAG, display_name = $EDGEMAP_TAG"
 }
 
 # ---- Main ----
