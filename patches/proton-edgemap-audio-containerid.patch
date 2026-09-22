@@ -1,0 +1,19 @@
+diff --git a/dlls/winepulse.drv/pulse.c b/dlls/winepulse.drv/pulse.c
+--- a/dlls/winepulse.drv/pulse.c
++++ b/dlls/winepulse.drv/pulse.c
+@@ -714,4 +714,15 @@
+     dev->def_period = 0;
+     dev->min_period = 0;
+     fill_device_info(dev, proplist);
++
++    /* edgemap's Bluetooth audio sink has no USB sysfs parent. Match winebus's UHID identity. */
++    if (list == &g_phys_speakers && !strcmp(pulse_name, "edgemap.dualsense") &&
++        dev->vendor_id == 0x054c && (dev->product_id == 0x0ce6 || dev->product_id == 0x0df2) &&
++        IsEqualGUID(&dev->container_id, &GUID_NULL))
++    {
++        dev->container_id.Data1 = dev->vendor_id;
++        dev->container_id.Data2 = 0xed6e;
++        dev->container_id.Data3 = 0x0001;
++    }
++
+     memcpy(dev->pulse_name, pulse_name, len + 1);

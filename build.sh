@@ -24,6 +24,7 @@ BUILDDIR="$WORKDIR/build"
 PATCHFILES=(
     "$WORKDIR/patches/proton-dualsense-containerid.patch"
     "$WORKDIR/patches/proton-ds4-uhid-mi03.patch"
+    "$WORKDIR/patches/proton-edgemap-audio-containerid.patch"
 )
 
 GITHUB_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom"
