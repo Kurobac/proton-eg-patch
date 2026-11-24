@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       ge_tag:
-        description: 'GE-Proton tag (e.g. GE-Proton10-34)'
+        description: 'GE-Proton tag (e.g. GE-Proton11-14)'
         required: false
         type: string
       wine_commit:
-        description: 'Wine commit SHA (auto-detected if empty)'
+        description: 'Expected Wine commit SHA (optional)'
         required: false
         type: string
 
@@ -84,87 +84,49 @@ jobs:
     needs: check_release
     if: needs.check_release.outputs.release_exists == 'false'
     runs-on: ubuntu-24.04
+    container: debian:13
     timeout-minutes: 60
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
-
-      - name: Configure apt mirror
-        run: |
-          source_file=/etc/apt/sources.list.d/ubuntu.sources
-          grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "$source_file"
-          sudo sed -i \
-            's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu/|g' \
-            "$source_file"
-          grep -F 'https://archive.ubuntu.com/ubuntu/' "$source_file"
-
       - name: Update apt index
         timeout-minutes: 3
         run: |
-          sudo apt-get \
+          apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
             update
 
-      - name: Install dependencies
+      - name: Install build dependencies
         timeout-minutes: 5
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo env DEBIAN_FRONTEND="$DEBIAN_FRONTEND" apt-get install -y \
-            flex bison \
-            libasound2-dev libpulse-dev libudev-dev \
-            autoconf automake libtool \
-            mingw-w64 libsdl2-dev \
-            python3
+          apt-get install -y --no-install-recommends \
+            ca-certificates git curl wget xz-utils build-essential pkg-config \
+            flex bison autoconf automake libtool python3 gcc-mingw-w64-x86-64 \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libudev-dev libsdl2-dev
 
-      - name: Get wine commit
-        id: wine
-        env:
-          GE_TAG: ${{ needs.check_release.outputs.ge_tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -n "${{ github.event.inputs.wine_commit }}" ]; then
-            commit="${{ github.event.inputs.wine_commit }}"
-            echo "commit=${{ github.event.inputs.wine_commit }}" >> "$GITHUB_OUTPUT"
-          else
-            commit=$(curl -sL \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/git/trees/$GE_TAG" \
-              | python3 -c "import json,sys; [print(i['sha']) for i in json.load(sys.stdin)['tree'] if i['path']=='wine']")
-            echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Wine commit: $commit"
+      - name: Checkout
+        uses: actions/checkout@main
+        with:
+          persist-credentials: false
 
       - name: Build
         run: ./build.sh "$GE_TAG" "$WINE_COMMIT"
         env:
           GE_TAG: ${{ needs.check_release.outputs.ge_tag }}
-          WINE_COMMIT: ${{ steps.wine.outputs.commit }}
+          WINE_COMMIT: ${{ inputs.wine_commit }}
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Package patch files
-        run: |
-          cd "build/wine-build-$WINE_COMMIT"
-          mkdir -p proton-patch
-          cp dlls/winebus.sys/x86_64-windows/winebus.sys proton-patch/
-          cp dlls/winebus.sys/winebus.so proton-patch/
-          cp dlls/winepulse.drv/winepulse.so proton-patch/
-          cp dlls/winealsa.drv/winealsa.so proton-patch/
-          tar czf proton-patch.tar.gz proton-patch
-          ls -lh proton-patch.tar.gz
-        env:
-          WINE_COMMIT: ${{ steps.wine.outputs.commit }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.check_release.outputs.release_tag }}
           name: "${{ needs.check_release.outputs.ge_tag }}-eg (edgemap patched)"
+          fail_on_unmatched_files: true
           files: |
-            build/*-eg.tar.gz
-            build/wine-build-${{ steps.wine.outputs.commit }}/proton-patch.tar.gz
+            build/${{ needs.check_release.outputs.ge_tag }}-eg.tar.gz
+            build/wine-build-${{ needs.check_release.outputs.ge_tag }}/proton-patch.tar.gz
         env:
           GITHUB_TOKEN: ${{ github.token }}

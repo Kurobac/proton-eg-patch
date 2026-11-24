@@ -4,38 +4,51 @@ set -euo pipefail
 # Build patched GE-Proton with edgemap/dseuhid controller fixes.
 #
 # Usage:
-#   ./build.sh GE-Proton10-34                    # auto-detect wine commit from GitHub API
-#   ./build.sh GE-Proton10-34 <wine-commit-sha>  # specify wine commit manually
+#   ./build.sh GE-Proton11-14
+#   ./build.sh GE-Proton11-14 <expected-wine-commit>
+
+log()  { echo ":: $*" >&2; }
+err()  { echo "ERROR: $*" >&2; exit 1; }
+check() { command -v "$1" >/dev/null || err "Missing: $1 (apt install $2)"; }
 
 GE_TAG="${1:-}"
 WINE_COMMIT="${2:-}"
-WINE_SRCDIR=""
-WINE_BUILDDIR=""
-EDGEMAP_TAG=""
 
-if [ -z "$GE_TAG" ]; then
-    echo "Usage: $0 <GE-Proton-tag> [wine-commit]" >&2
-    echo "Example: $0 GE-Proton10-34" >&2
+if [[ ! $GE_TAG =~ ^GE-Proton[0-9][a-zA-Z0-9._-]*$ || $# -gt 2 ]]; then
+    echo "Usage: $0 <GE-Proton-tag> [expected-wine-commit]" >&2
+    echo "Example: $0 GE-Proton11-14" >&2
     exit 1
 fi
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$WORKDIR/build"
+GE_SOURCE="$BUILDDIR/source-$GE_TAG"
+WINE_SRCDIR="$GE_SOURCE/wine"
+WINE_BUILDDIR="$BUILDDIR/wine-build-$GE_TAG"
+EDGEMAP_TAG="${GE_TAG}-eg"
 PATCHFILES=(
     "$WORKDIR/patches/proton-dualsense-containerid.patch"
     "$WORKDIR/patches/proton-ds4-uhid-mi03.patch"
     "$WORKDIR/patches/proton-edgemap-audio-containerid.patch"
 )
 
-GITHUB_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom"
-VALVE_WINE="https://github.com/ValveSoftware/wine"
+DRIVERS=(
+    dlls/winebus.sys/x86_64-windows/winebus.sys
+    dlls/winebus.sys/winebus.so
+    dlls/winepulse.drv/winepulse.so
+    dlls/winepipewire.drv/winepipewire.so
+    dlls/winealsa.drv/winealsa.so
+)
 
-log()  { echo ":: $*" >&2; }
-err()  { echo "ERROR: $*" >&2; exit 1; }
-check() { command -v "$1" >/dev/null || err "Missing: $1 (apt install $2)"; }
+GITHUB_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom"
+GE_REPO="https://github.com/GloriousEggroll/proton-ge-custom.git"
+release_token=${GITHUB_TOKEN:-}
+unset GITHUB_TOKEN
 
 # ---- Check deps ----
 check_deps() {
+    check git        git
+    check autoreconf autoconf
     check curl       curl
     check tar        tar
     check patch      patch
@@ -46,32 +59,15 @@ check_deps() {
     check bison      bison
     pkg-config --exists alsa    || err "Missing: alsa (apt install libasound2-dev)"
     pkg-config --exists libpulse|| err "Missing: libpulse (apt install libpulse-dev)"
+    pkg-config --atleast-version=1.2 libpipewire-0.3 || err "PipeWire >= 1.2 development files required (libpipewire-0.3-dev)"
     pkg-config --exists libudev || err "Missing: libudev (apt install libudev-dev)"
-}
-
-# ---- Get wine commit from GE-Proton GitHub API tree ----
-get_wine_commit_api() {
-    local tag="$1"
-    local auth_header=()
-    if [ -n "${GITHUB_TOKEN:-}" ]; then
-        auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    fi
-    log "Detecting wine commit for $tag via GitHub API..."
-    curl -sL "${auth_header[@]}" "$GITHUB_API/git/trees/$tag" | python3 -c "
-import json, sys
-for item in json.load(sys.stdin).get('tree', []):
-    if item['path'] == 'wine':
-        print(item['sha'])
-        sys.exit(0)
-sys.exit(1)
-"
 }
 
 get_ge_release_asset_url() {
     local tag="$1"
     local auth_header=()
-    if [ -n "${GITHUB_TOKEN:-}" ]; then
-        auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    if [ -n "$release_token" ]; then
+        auth_header=(-H "Authorization: Bearer $release_token")
     fi
 
     curl -sL --fail "${auth_header[@]}" "$GITHUB_API/releases/tags/$tag" | python3 -c '
@@ -93,63 +89,51 @@ print(matches[0]["browser_download_url"])
 ' "$tag"
 }
 
-# ---- Download & extract ----
-download_wine() {
-    local commit="$1"
-    local dst="$WINE_SRCDIR"
-    if [ -f "$dst/configure.ac" ]; then
-        log "Wine source already at $dst"
-        return
+# ---- Prepare the Wine tree used by this GE release ----
+prepare_wine() (
+    if [[ ! -d "$GE_SOURCE/.git" ]]; then
+        git clone --depth 1 --branch "$GE_TAG" "$GE_REPO" "$GE_SOURCE"
     fi
-    rm -rf "$dst"
-    local url="$VALVE_WINE/archive/$commit.tar.gz"
-    log "Downloading wine source ($commit)..."
-    mkdir -p "$(dirname "$dst")"
-    curl -L --fail "$url" | tar xz -C "$BUILDDIR"
-}
+
+    cd "$GE_SOURCE"
+    local pinned patchfile
+    pinned=$(git rev-parse HEAD:wine)
+    [[ $(git rev-parse HEAD) == "$(git rev-parse "refs/tags/$GE_TAG^{commit}")" ]] ||
+        err "Unexpected checkout in $GE_SOURCE"
+    [[ -z "$WINE_COMMIT" || "$WINE_COMMIT" == "$pinned" ]] ||
+        err "$GE_TAG pins Wine $pinned (requested $WINE_COMMIT)"
+
+    # These submodules are used by GE's preparation script. WineOpenXR
+    # and the Proton helpers are already in the superproject checkout.
+    git submodule update --init --checkout --filter=tree:0 --jobs 6 -- \
+        wine wine-staging dxvk d7vk openvr vkd3d-proton dxvk-nvapi vklayers/low_latency_layer
+    bash -e -o pipefail patches/protonprep-valve-staging.sh
+    cd wine
+    for patchfile in "${PATCHFILES[@]}"; do
+        log "Applying ${patchfile##*/}"
+        git apply "$patchfile"
+    done
+
+    # GE's .wine-post-source step generates headers needed by makedep.
+    XDG_CACHE_HOME="$WINE_BUILDDIR" dlls/winevulkan/make_vulkan -x vk.xml -X video.xml
+    tools/make_specfiles
+)
 
 download_ge_proton() {
     local tag="$1"
     local dst="$BUILDDIR/$tag"
-    if [ -f "$dst/proton" ]; then
-        log "GE-Proton already at $dst"
+    if [[ -f "$dst/proton" && -f "$dst/version" ]]; then
+        log "Using $dst"
         return
     fi
-    rm -rf "$dst"
     local url
     url=$(get_ge_release_asset_url "$tag")
-    log "Downloading $tag (this may take a while)..."
-    mkdir -p "$(dirname "$dst")"
-    curl -L --fail "$url" | tar xz -C "$BUILDDIR"
-    # The tarball extracts to a subdirectory, move it
-    local subdir
-    subdir=$(ls "$BUILDDIR" | grep -i "$tag" | head -1)
-    if [ "$subdir" != "$tag" ] && [ -d "$BUILDDIR/$subdir" ]; then
-        mv "$BUILDDIR/$subdir" "$dst"
-    fi
-}
-
-# ---- Apply patches idempotently ----
-apply_patch_file() {
-    local patchfile="$1"
-    local patch_name
-    local patch_output
-
-    patch_name="$(basename "$patchfile")"
-    log "Applying $patch_name..."
-
-    if (cd "$WINE_SRCDIR" && patch -N -p1 --dry-run < "$patchfile" > /dev/null); then
-        patch_output=$(cd "$WINE_SRCDIR" && patch -N -p1 < "$patchfile" 2>&1) || {
-            printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
-            err "$patch_name failed to apply cleanly."
-        }
-        printf '%s\n' "$patch_output" | grep -v "^patching file" >&2 || true
-        log "$patch_name applied."
-    elif (cd "$WINE_SRCDIR" && patch -R -p1 --dry-run < "$patchfile" > /dev/null); then
-        log "$patch_name already applied."
-    else
-        err "$patch_name failed to apply cleanly."
-    fi
+    log "Downloading $tag..."
+    rm -rf "$dst.partial"
+    mkdir -p "$dst.partial"
+    curl -fLsS "$url" | tar xz --strip-components=1 -C "$dst.partial"
+    [[ -f "$dst.partial/proton" && -f "$dst.partial/version" ]] || err "Incomplete $tag release"
+    mv -T "$dst.partial" "$dst"
 }
 
 # ---- Create clean edgemap output tree from cached GE-Proton ----
@@ -166,83 +150,39 @@ prepare_edgemap_tree() {
     cp -a "$src" "$dst"
 }
 
-# ---- Build wine 64-bit, just our 3 modules ----
-build_wine() {
-    local winedir="$WINE_SRCDIR"
-    local winebuild="$WINE_BUILDDIR"
+# ---- Build wine 64-bit, patched modules ----
+build_wine() (
+    local jobs
+    jobs=$(nproc)
+    mkdir -p "$WINE_BUILDDIR"
+    cd "$WINE_BUILDDIR"
+    log "Configuring Wine..."
+    "$WINE_SRCDIR/configure" --enable-win64 --with-pipewire \
+        --without-x --without-freetype --without-oss \
+        --without-opengl --without-vulkan --without-cups --without-dbus \
+        --without-gettext --without-opencl > /dev/null
+    log "Building the 64-bit driver modules..."
+    make -j"$jobs" "${DRIVERS[@]}" > /dev/null
+)
 
-    if [ ! -f "$winedir/configure" ]; then
-        log "Running autogen.sh..."
-        (cd "$winedir" && ./autogen.sh) > /dev/null
-    fi
-
-    if [ ! -f "$winebuild/Makefile" ]; then
-        log "Running configure..."
-        mkdir -p "$winebuild"
-        (cd "$winebuild" && "$winedir/configure" --enable-win64 \
-            --without-x --without-freetype --without-oss \
-            --without-gstreamer --without-opengl --without-vulkan \
-            --without-cups --without-dbus \
-            --without-gettext --without-opencl) > /dev/null
-    fi
-
-    log "Building wine (64-bit, only our 3 modules)..."
-    (cd "$winebuild" && make -k -j"$(nproc)" \
-        dlls/winebus.sys/x86_64-windows/winebus.sys \
-        dlls/winebus.sys/winebus.so \
-        dlls/winepulse.drv/winepulse.so \
-        dlls/winealsa.drv/winealsa.so > /dev/null)
-
-    # Verify our 4 output files exist
-    local files=(
-        "dlls/winebus.sys/x86_64-windows/winebus.sys"
-        "dlls/winebus.sys/winebus.so"
-        "dlls/winepulse.drv/winepulse.so"
-        "dlls/winealsa.drv/winealsa.so"
-    )
-    for f in "${files[@]}"; do
-        if [ ! -f "$winebuild/$f" ]; then
-            err "Build failed: $f not found"
-        fi
-        strip "$winebuild/$f" 2>/dev/null || true
-        log "  built: $f ($(ls -lh "$winebuild/$f" | awk '{print $5}'))"
-    done
-}
-
-# ---- Replace patched files in GE-Proton tree ----
+# Install and package the same drivers for both downloads.
 replace_files() {
     local ge_lib="$BUILDDIR/$EDGEMAP_TAG/files/lib/wine"
-    local wb="$WINE_BUILDDIR"
-
-    if [ ! -d "$ge_lib" ]; then
-        err "GE-Proton lib directory not found: $ge_lib"
-    fi
-
-    log "Replacing patched files..."
-
-    # winebus.sys PE (main.c patch → get_container_id)
-    replace_file "$wb/dlls/winebus.sys/x86_64-windows/winebus.sys" \
-                 "$ge_lib/x86_64-windows/winebus.sys"
-
-    # winebus.sys Unix (bus_udev.c et al)
-    replace_file "$wb/dlls/winebus.sys/winebus.so" \
-                 "$ge_lib/x86_64-unix/winebus.so"
-
-    # winepulse.drv Unix (pulse.c patch → get_container_id override)
-    replace_file "$wb/dlls/winepulse.drv/winepulse.so" \
-                 "$ge_lib/x86_64-unix/winepulse.so"
-
-    # winealsa.drv Unix (alsa.c patch → ContainerId property)
-    replace_file "$wb/dlls/winealsa.drv/winealsa.so" \
-                 "$ge_lib/x86_64-unix/winealsa.so"
-}
-
-replace_file() {
-    local src="$1"
-    local dst="$2"
-
-    rm -f "$dst"
-    install -m 555 -v "$src" "$dst"
+    local bundle="$WINE_BUILDDIR/proton-patch"
+    local driver arch dest
+    mkdir -p "$bundle"
+    for driver in "${DRIVERS[@]}"; do
+        case "$driver" in
+            *.sys) arch=x86_64-windows ;;
+            *.so)  arch=x86_64-unix ;;
+        esac
+        dest="$ge_lib/$arch/${driver##*/}"
+        [[ -f "$dest" ]] || err "Driver missing from $GE_TAG: $dest"
+        install -s -m 555 "$WINE_BUILDDIR/$driver" "$dest"
+        install -m 555 "$dest" "$bundle/"
+    done
+    tar czf "$WINE_BUILDDIR/proton-patch.tar.gz.partial" -C "$WINE_BUILDDIR" proton-patch
+    mv "$WINE_BUILDDIR/proton-patch.tar.gz.partial" "$WINE_BUILDDIR/proton-patch.tar.gz"
 }
 
 # ---- Repack to tar.gz ----
@@ -251,9 +191,9 @@ repack() {
     local outpath="$BUILDDIR/$outname"
 
     log "Repacking $outname..."
-    rm -f "$outpath"
-    tar czf "$outpath" -C "$BUILDDIR" "$EDGEMAP_TAG"
-    log "Done: $outpath ($(ls -lh "$outpath" | awk '{print $5}'))"
+    tar czf "$outpath.partial" -C "$BUILDDIR" "$EDGEMAP_TAG"
+    mv "$outpath.partial" "$outpath"
+    log "Done: $outpath"
     echo "$outpath"
 }
 
@@ -305,22 +245,12 @@ tag_edgemap() {
 main() {
     check_deps
 
-    if [ -z "$WINE_COMMIT" ]; then
-        WINE_COMMIT=$(get_wine_commit_api "$GE_TAG")
-    fi
-    log "Wine commit: $WINE_COMMIT"
-    WINE_SRCDIR="$BUILDDIR/wine-$WINE_COMMIT"
-    WINE_BUILDDIR="$BUILDDIR/wine-build-$WINE_COMMIT"
-    EDGEMAP_TAG="${GE_TAG}-eg"
+    mkdir -p "$BUILDDIR"
+    exec 9>"$BUILDDIR/$GE_TAG.lock"
+    flock -n 9 || err "Another build of $GE_TAG is running"
 
-    log "=== Downloading wine source ==="
-    download_wine "$WINE_COMMIT"
-
-    log "=== Applying patches ==="
-    local patchfile
-    for patchfile in "${PATCHFILES[@]}"; do
-        apply_patch_file "$patchfile"
-    done
+    log "=== Preparing $GE_TAG Wine sources ==="
+    prepare_wine
 
     log "=== Building wine ==="
     build_wine

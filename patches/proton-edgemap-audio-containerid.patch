@@ -1,19 +1,175 @@
 diff --git a/dlls/winepulse.drv/pulse.c b/dlls/winepulse.drv/pulse.c
 --- a/dlls/winepulse.drv/pulse.c
 +++ b/dlls/winepulse.drv/pulse.c
-@@ -714,4 +714,15 @@
-     dev->def_period = 0;
-     dev->min_period = 0;
+@@ -1968,6 +1968,12 @@ static void pulse_add_device(struct list
+     pthread_mutex_init(&dev->ready_mutex, NULL);
+     pthread_cond_init(&dev->ready_cond, NULL);
      fill_device_info(dev, proplist);
++    /* The edgemap sink has the USB audio identity but no sysfs parent. */
++    if (flow == eRender && !strcmp(pulse_name, "edgemap.dualsense") && dev->vendor_id == 0x054c
++            && (dev->product_id == 0x0ce6 || dev->product_id == 0x0df2)
++            && IsEqualGUID(&dev->container_id, &GUID_NULL))
++        dev->container_id = (GUID){0x054c, 0xed6e, 1, {0}};
 +
-+    /* edgemap's Bluetooth audio sink has no USB sysfs parent. Match winebus's UHID identity. */
-+    if (list == &g_phys_speakers && !strcmp(pulse_name, "edgemap.dualsense") &&
-+        dev->vendor_id == 0x054c && (dev->product_id == 0x0ce6 || dev->product_id == 0x0df2) &&
-+        IsEqualGUID(&dev->container_id, &GUID_NULL))
+     if (dev->flow == eRender && is_dualsense_audio_device(dev) && proplist)
+     {
+         const char *target = pa_proplist_gets(proplist, "api.alsa.split.name");
+@@ -2064,7 +2070,7 @@ static BOOL bt_dualsense_haptics_enabled(void)
+ 
+     if ((env = getenv("PROTON_DUALSENSE_BT_AS_USB")) && !strcmp(env, "0"))
+         return FALSE;
+-    if ((env = getenv("PROTON_DUALSENSE_BT_HAPTICS")) && !strcmp(env, "0"))
++    if (!(env = getenv("PROTON_DUALSENSE_BT_HAPTICS")) || strcmp(env, "1"))
+         return FALSE;
+     if ((env = getenv("PROTON_EMULATE_STEAMINPUT")) && atoi(env))
+         return FALSE;
+@@ -2234,7 +2240,7 @@ static BOOL bt_dualshock4_audio_enabled(void)
+ 
+     if ((env = getenv("PROTON_DUALSHOCK4_BT_AS_USB")) && !strcmp(env, "0"))
+         return FALSE;
+-    if ((env = getenv("PROTON_DUALSHOCK4_BT_AUDIO")) && !strcmp(env, "0"))
++    if (!(env = getenv("PROTON_DUALSHOCK4_BT_AUDIO")) || strcmp(env, "1"))
+         return FALSE;
+     if ((env = getenv("PROTON_EMULATE_STEAMINPUT")) && atoi(env))
+         return FALSE;
+diff --git a/dlls/winepipewire.drv/bluetooth.c b/dlls/winepipewire.drv/bluetooth.c
+--- a/dlls/winepipewire.drv/bluetooth.c
++++ b/dlls/winepipewire.drv/bluetooth.c
+@@ -1136,7 +1136,7 @@
+ 
+     if ((env = getenv("PROTON_DUALSENSE_BT_AS_USB")) && !strcmp(env, "0"))
+         return FALSE;
+-    if ((env = getenv("PROTON_DUALSENSE_BT_HAPTICS")) && !strcmp(env, "0"))
++    if (!(env = getenv("PROTON_DUALSENSE_BT_HAPTICS")) || strcmp(env, "1"))
+         return FALSE;
+     if ((env = getenv("PROTON_EMULATE_STEAMINPUT")) && atoi(env))
+         return FALSE;
+@@ -1151,7 +1151,7 @@
+ 
+     if ((env = getenv("PROTON_DUALSHOCK4_BT_AS_USB")) && !strcmp(env, "0"))
+         return FALSE;
+-    if ((env = getenv("PROTON_DUALSHOCK4_BT_AUDIO")) && !strcmp(env, "0"))
++    if (!(env = getenv("PROTON_DUALSHOCK4_BT_AUDIO")) || strcmp(env, "1"))
+         return FALSE;
+     if ((env = getenv("PROTON_EMULATE_STEAMINPUT")) && atoi(env))
+         return FALSE;
+@@ -1260,10 +1260,13 @@
+ {
+     char path[PATH_MAX], line[256];
+     struct bt_controller c;
++    BOOL dualsense = bt_dualsense_haptics_enabled(), dualshock4 = bt_dualshock4_audio_enabled();
+     struct dirent *entry;
+     DIR *dir;
+     FILE *f;
+ 
++    if (!dualsense && !dualshock4)
++        return;
+     if (!(dir = opendir("/sys/class/hidraw")))
+         return;
+     while ((entry = readdir(dir)))
+@@ -1289,7 +1292,8 @@
+ 
+         if (bus != 0x0005 || vid != 0x054c || !have_mac)
+             continue;
+-        if (c.pid != 0x0ce6 && c.pid != 0x0df2 && c.pid != 0x05c4 && c.pid != 0x09cc)
++        if (!(dualsense && (c.pid == 0x0ce6 || c.pid == 0x0df2)) &&
++            !(dualshock4 && (c.pid == 0x05c4 || c.pid == 0x09cc)))
+             continue;
+         snprintf(c.hidraw, sizeof(c.hidraw), "/dev/%s", entry->d_name);
+         if (!callback(&c, context))
+@@ -1320,7 +1324,6 @@
+ {
+     bt_endpoint_cb callback;
+     void *context;
+-    BOOL dualsense, dualshock4;
+ };
+ 
+ static BOOL enum_controller(const struct bt_controller *c, void *arg)
+@@ -1335,8 +1338,6 @@
+ 
+     if (!is_dualshock4(c->pid))
+     {
+-        if (!ctx->dualsense)
+-            return TRUE;
+         bt_base_name(c, eRender, base, sizeof(base));
+         if (!(ep.name = bt_dualsense_endpoint_id(base, &ep.container_id)))
+             return TRUE;
+@@ -1351,8 +1352,6 @@
+         return TRUE;
+     }
+ 
+-    if (!ctx->dualshock4)
+-        return TRUE;
+     /* Like the wired controller: a stereo 32 kHz speaker and a mono 16 kHz
+      * headset microphone. */
+     ep.display = "Wireless Controller";
+@@ -1379,11 +1378,8 @@
+ 
+ void bt_enum_endpoints(bt_endpoint_cb callback, void *context)
+ {
+-    struct enum_context ctx = { callback, context, bt_dualsense_haptics_enabled(), bt_dualshock4_audio_enabled() };
++    struct enum_context ctx = { callback, context };
+     struct bt_endpoint_id *entry, *next;
+-
+-    if (!ctx.dualsense && !ctx.dualshock4)
+-        return;
+ 
+     pthread_mutex_lock(&bt_ids_lock);
+     LIST_FOR_EACH_ENTRY(entry, &bt_endpoint_ids, struct bt_endpoint_id, entry)
+@@ -1409,6 +1405,8 @@
+     const char *p;
+     DIR *dir;
+ 
++    if (!bt_dualsense_haptics_enabled() && !bt_dualshock4_audio_enabled())
++        return 0;
+     if (!(dir = opendir("/sys/class/hidraw")))
+         return 0;
+     while ((entry = readdir(dir)))
+diff --git a/dlls/winepipewire.drv/pipewire.c b/dlls/winepipewire.drv/pipewire.c
+--- a/dlls/winepipewire.drv/pipewire.c
++++ b/dlls/winepipewire.drv/pipewire.c
+@@ -1123,6 +1123,7 @@ struct probe_node
+     uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+     int have_format;
+     uint32_t device_id;    /* parent device.id, or SPA_ID_INVALID */
++    UINT16 edgemap_pid;
+     enum pw_device_bus bus;
+     char *split_name;      /* api.alsa.split.name: the hidden hardware node */
+     int alsa_card;         /* api.alsa.pcm.card or api.alsa.card, else -1 */
+@@ -1218,8 +1219,18 @@ static void on_probe_node_info(void *dat
+ {
+     struct probe_node *pn = data;
+ 
+-    if (info && info->props)
+-        probe_node_alsa_props(pn, info->props);
++    uint32_t vid, pid;
++
++    if (!info || !info->props)
++        return;
++    probe_node_alsa_props(pn, info->props);
++
++    /* edgemap publishes the USB identity on the sink node itself. */
++    if (pn->flow == eRender && !strcmp(pn->node_name, "edgemap.dualsense") &&
++        parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_VENDOR_ID), 16, 0, 0xffff, &vid) &&
++        parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID), 16, 0, 0xffff, &pid) &&
++        vid == 0x054c && (pid == 0x0ce6 || pid == 0x0df2))
++        pn->edgemap_pid = pid;
+ }
+ 
+ static const struct pw_node_events probe_node_events = {
+@@ -2097,6 +2108,15 @@ static void sony_fill_device(struct pw_p
+     dev->flow = monitor ? eCapture : pn->flow;
+     dev->monitor = monitor;
+     dev->alsa_card = pn->alsa_card;
++    if (pn->edgemap_pid && !monitor)
 +    {
-+        dev->container_id.Data1 = dev->vendor_id;
-+        dev->container_id.Data2 = 0xed6e;
-+        dev->container_id.Data3 = 0x0001;
++        /* Route all four channels to edgemap's node; it handles the controller output. */
++        dev->bus = PW_BUS_USB;
++        dev->vendor_id = 0x054c;
++        dev->product_id = pn->edgemap_pid;
++        dev->container_id = (GUID){0x054c, 0xed6e, 1, {0}};
++        return;
 +    }
-+
-     memcpy(dev->pulse_name, pulse_name, len + 1);
+     if (!(dev->sony_usb = dev->bus == PW_BUS_USB && sony_usb_product(dev->vendor_id, dev->product_id)))
+         return;
+     if (!(dev->node = strdup(pn->node_name)))
